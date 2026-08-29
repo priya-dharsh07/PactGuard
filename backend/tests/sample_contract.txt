@@ -1,0 +1,22 @@
+MASTER SERVICE AGREEMENT
+
+1. Indemnification
+The Service Provider shall indemnify, defend, and hold harmless the Client from any and all claims, damages, and losses, without limitation, arising from the Service Provider's performance under this Agreement.
+
+2. Limitation of Liability
+Except as set forth above, in no event shall either party's total liability exceed the fees paid in the preceding 3 months under this Agreement.
+
+3. Term and Termination
+Either party may terminate this Agreement upon 15 days written notice to the other party.
+
+4. Automatic Renewal
+This Agreement shall automatically renew for successive 12 month periods unless either party provides notice of non-renewal at least 30 days prior to the end of the then-current term.
+
+5. Confidentiality
+Each party agrees to maintain the confidentiality of the other party's proprietary information disclosed during the term of this Agreement.
+
+6. Governing Law
+This Agreement shall be governed by the laws of the State of Delaware.
+
+7. Payment Terms
+Client shall pay all invoiced fees within 30 days of receipt of invoice.
