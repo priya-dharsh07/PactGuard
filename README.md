@@ -3,7 +3,6 @@
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
 [![Next.js](https://img.shields.io/badge/Frontend-Next.js%2015-black.svg?style=flat&logo=next.js)](https://nextjs.org)
 [![HuggingFace](https://img.shields.io/badge/Model-Flan--T5--base-yellow.svg?style=flat&logo=huggingface)](https://huggingface.co/google/flan-t5-base)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **PactGuard** is an open-vocabulary legal contract intelligence system that understands clause semantics across arbitrary domains (SaaS, Real Estate, NDAs, Education, Employment, MSAs), evaluates dynamic risk from actual contract wording, and simulates systemic hazards using interactive semantic risk graphs.
 
