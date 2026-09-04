@@ -1,40 +1,26 @@
+# backend/app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from backend.app.api import contracts, simulate
+from backend.app.api.contracts import router as contracts_router
+from backend.app.api.simulate import router as simulate_router
 
 app = FastAPI(
     title="PactGuard API",
-    description="AI-powered contract intelligence & risk analysis",
-    version="0.1.0",
+    description="Open-Vocabulary Contract Intelligence & Risk Simulation Engine",
+    version="2.0.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(
-    contracts.router,
-    prefix="/api/contracts",
-    tags=["contracts"],
-)
+app.include_router(contracts_router)
+app.include_router(simulate_router)
 
-app.include_router(
-    simulate.router,
-    prefix="/api/simulate",
-    tags=["simulate"],
-)
-
-@app.get("/api/health")
+@app.get("/health")
 def health_check():
-    return {
-        "status": "ok",
-        "service": "pactguard-backend",
-    }
+    return {"status": "healthy", "engine": "Flan-T5 Seq2Seq + Semantic Risk Graph"}

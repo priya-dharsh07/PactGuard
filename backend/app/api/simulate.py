@@ -1,42 +1,57 @@
-"""
-POST /api/simulate
-
-The What-If Simulator's backend half. The frontend sends the full set
-of clauses/edges from a prior analysis, plus one clause's edited
-parameters, and gets back the recalculated compounded score and
-exposure - no re-running the NLP pipeline, just re-running the graph
-propagation on the updated numbers.
-"""
+# backend/app/api/simulate.py
 from fastapi import APIRouter
+from backend.app.model.schemas import SimulateRequest, SimulateResponse
+from backend.app.core.risk_graph import SemanticRiskGraph
 
-from backend.app.models.schemas import SimulateRequest, SimulateResponse
-from nlp.classifier import _apply_parameter_scoring
-from backend.app.core.risk_graph import (
-    compute_compounded_scores,
-    overall_score,
-    score_to_level,
-    estimate_exposure,
-)
-
-router = APIRouter()
-
+router = APIRouter(prefix="/simulate", tags=["Simulator"])
 
 @router.post("", response_model=SimulateResponse)
-def simulate(request: SimulateRequest) -> SimulateResponse:
-    clauses = request.clauses
-    for clause in clauses:
-        if clause.id == request.edited_clause_id:
-            clause.parameters = {**clause.parameters, **request.edited_parameters}
-            clause.base_risk_score = _apply_parameter_scoring(
-                clause.clause_type, clause.base_risk_score, clause.parameters
-            )
+async def simulate_contract(request: SimulateRequest):
+    original_clauses = request.clauses
+    adjustments = request.parameter_adjustments
 
-    per_clause_scores = compute_compounded_scores(clauses, request.edges)
-    contract_score = overall_score(per_clause_scores)
+    orig_graph = SemanticRiskGraph.build_graph(original_clauses)
+    original_score = orig_graph.systemic_risk_score
+
+    updated_clauses = []
+    for c in original_clauses:
+        mod = c.model_copy(deep=True)
+        cat_lower = mod.clause_type.lower()
+
+        if "liability" in cat_lower and adjustments.get("cap_liability"):
+            mod.risk_score = max(10.0, mod.risk_score - 35.0)
+            mod.risk_factors.append("Simulated: Explicit mutual liability cap applied")
+
+        if "terminat" in cat_lower and adjustments.get("extend_notice_days"):
+            days = adjustments.get("extend_notice_days")
+            mod.risk_score = max(10.0, mod.risk_score - 20.0)
+            mod.risk_factors.append(f"Simulated: Notice period extended to {days} days")
+
+        if "indemn" in cat_lower and adjustments.get("make_indemnity_mutual"):
+            mod.risk_score = max(15.0, mod.risk_score - 25.0)
+            mod.risk_factors.append("Simulated: Mutualized indemnification scope")
+
+        if mod.risk_score >= 70:
+            mod.risk_level = "CRITICAL"
+        elif mod.risk_score >= 50:
+            mod.risk_level = "HIGH"
+        elif mod.risk_score >= 25:
+            mod.risk_level = "MEDIUM"
+        else:
+            mod.risk_level = "LOW"
+
+        updated_clauses.append(mod)
+
+    new_graph = SemanticRiskGraph.build_graph(updated_clauses)
+    new_score = new_graph.systemic_risk_score
+    delta = round(new_score - original_score, 1)
 
     return SimulateResponse(
-        compounded_risk_score=contract_score,
-        risk_level=score_to_level(contract_score),
-        estimated_exposure=estimate_exposure(clauses, request.contract_value),
-        per_clause_scores=per_clause_scores,
+        original_risk_score=original_score,
+        simulated_risk_score=new_score,
+        delta=delta,
+        risk_level=new_graph.nodes[0]["risk_level"] if new_graph.nodes else "LOW",
+        impact_summary=f"Simulated adjustments reduced systemic risk by {abs(delta)} points." if delta < 0 else "Risk level unchanged.",
+        updated_clauses=updated_clauses,
+        updated_graph=new_graph
     )

@@ -20,8 +20,6 @@ TEST_SIZE = 0.15
 
 def main():
 
-    print("Loading prepared CUAD dataset...")
-
     df = pd.read_csv(INPUT_FILE)
 
     print(f"Total samples: {len(df)}")

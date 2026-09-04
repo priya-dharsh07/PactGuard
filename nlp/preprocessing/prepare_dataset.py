@@ -1,4 +1,8 @@
+# nlp/preprocessing/prepare_dataset.py
+import os
+import re
 from pathlib import Path
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -15,7 +19,7 @@ VALIDATION_FILE = DATA_DIR / "validation.csv"
 TEST_FILE = DATA_DIR / "test.csv"
 
 TARGET_TOTAL_CATEGORIES = 500
-MIN_CLUSTER_SIZE = 12  # below this, a sub-category is too thin to learn reliably
+MIN_CLUSTER_SIZE = 12  
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 TOP_TERMS_PER_CLUSTER = 3
 
@@ -57,118 +61,144 @@ def name_cluster_tfidf(cluster_texts, other_cluster_texts_list):
     return label if label else "variant"
 
 
+def load_raw_dataset() -> pd.DataFrame:
+    if not INPUT_FILE.exists():
+        raise FileNotFoundError(
+            f"Could not find {INPUT_FILE}. Please ensure 'cuad_clause_dataset.csv' exists in 'nlp/data/'."
+        )
+
+    print(f"Loading local dataset from: {INPUT_FILE}")
+    df = pd.read_csv(INPUT_FILE)
+
+    col_map = {}
+    for col in df.columns:
+        c_lower = col.lower().strip()
+        if c_lower in ["clause_text", "text", "clause", "context"]:
+            col_map[col] = "clause_text"
+        elif c_lower in ["contract_name", "contract_id", "filename", "title", "contract"]:
+            col_map[col] = "contract_name"
+        elif c_lower in ["label", "category", "clause_type", "broad_category"]:
+            col_map[col] = "label"
+
+    df = df.rename(columns=col_map)
+
+    if "clause_text" not in df.columns or "label" not in df.columns:
+        raise ValueError(f"CSV must contain clause text and category columns. Found: {list(df.columns)}")
+
+    if "contract_name" not in df.columns:
+        print("[Warning] 'contract_name' column missing. Assigning row-based contract IDs.")
+        df["contract_name"] = [f"contract_{i // 15}" for i in range(len(df))]
+
+    df = df.dropna(subset=["clause_text", "label"])
+    df["clause_text"] = df["clause_text"].astype(str).str.strip()
+    df = df[df["clause_text"].str.len() >= 25].drop_duplicates(subset=["clause_text"]).reset_index(drop=True)
+    return df
+
 def expand_categories(df: pd.DataFrame) -> pd.DataFrame:
+
     print(f"Loaded {len(df)} clauses across {df['label'].nunique()} broad categories")
-
-    print("Computing embeddings (one-time, CPU is fine for this)...")
+    print("Computing MiniLM sentence embeddings...")
     embedder = SentenceTransformer(EMBEDDING_MODEL)
-    embeddings = embedder.encode(df["clause_text"].tolist(), show_progress_bar=True)
+    embeddings = embedder.encode(df["clause_text"].tolist(), show_progress_bar=True, batch_size=64)
 
-    total_rows = len(df)
-    fine_labels = np.empty(total_rows, dtype=object)
-    total_clusters_created = 0
+    broad_counts = df["label"].value_counts()
+    total_samples = len(df)
+    
+    fine_grained_labels = [""] * len(df)
+    seen_names = set()
 
-    for broad_label, group in df.groupby("label"):
-        idx = group.index.to_numpy()
-        group_embeddings = embeddings[idx]
-        count = len(idx)
+    print("\nClustering broad categories into sub-categories...")
+    for broad_cat, count in broad_counts.items():
+        cat_indices = df[df["label"] == broad_cat].index.to_numpy()
+        cat_texts = df.loc[cat_indices, "clause_text"].tolist()
+        cat_embeds = embeddings[cat_indices]
 
-        proportional_k = max(1, round(count / total_rows * TARGET_TOTAL_CATEGORIES))
-        max_k_by_size = max(1, count // MIN_CLUSTER_SIZE)
-        k = min(proportional_k, max_k_by_size)
+        k = max(1, min(int(round((count / total_samples) * TARGET_TOTAL_CATEGORIES)), count // MIN_CLUSTER_SIZE))
 
-        print(f"{broad_label}: {count} clauses -> {k} sub-categories")
-        total_clusters_created += k
+        if k <= 1 or count < (MIN_CLUSTER_SIZE * 2):
+            cluster_assignments = np.zeros(len(cat_indices), dtype=int)
+            k = 1
+        else:
+            kmeans = KMeans(n_clusters=k, random_state=42, n_init=5)
+            cluster_assignments = kmeans.fit_predict(cat_embeds)
 
-        if k == 1:
-            fine_labels[idx] = broad_label
-            continue
+        cluster_texts_dict = defaultdict(list)
+        cluster_indices_dict = defaultdict(list)
+        for sub_id, g_idx in zip(cluster_assignments, cat_indices):
+            cluster_texts_dict[sub_id].append(df.loc[g_idx, "clause_text"])
+            cluster_indices_dict[sub_id].append(g_idx)
 
-        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-        cluster_ids = kmeans.fit_predict(group_embeddings)
+        for sub_id in range(k):
+            sub_texts = cluster_texts_dict[sub_id]
+            sub_indices = cluster_indices_dict[sub_id]
 
-        cluster_texts_by_id = {
-            cid: df.loc[idx[cluster_ids == cid], "clause_text"].tolist()
-            for cid in range(k)
-        }
+            if k == 1:
+                sub_label_tag = "standard"
+            else:
+                other_texts = [cluster_texts_dict[o_id] for o_id in range(k) if o_id != sub_id]
+                sub_label_tag = name_cluster_tfidf(sub_texts, other_texts)
 
-        used_names_for_label = set()
+            clean_broad = str(broad_cat).lower().strip().replace(" ", "_").replace("-", "_")
+            composite_name = f"{clean_broad}__{sub_label_tag}"
 
-        for cluster_id in range(k):
-            mask = cluster_ids == cluster_id
-            cluster_row_idx = idx[mask]
+            unique_name = composite_name
+            counter = 1
+            while unique_name in seen_names:
+                unique_name = f"{composite_name}_v{counter}"
+                counter += 1
+            seen_names.add(unique_name)
 
-            this_cluster_texts = cluster_texts_by_id[cluster_id]
-            other_cluster_texts = [
-                cluster_texts_by_id[cid] for cid in range(k) if cid != cluster_id
-            ]
+            for g_idx in sub_indices:
+                fine_grained_labels[g_idx] = unique_name
 
-            sub_name = name_cluster_tfidf(this_cluster_texts, other_cluster_texts)
-
-            # Guarantee uniqueness within this broad category
-            final_name = sub_name
-            suffix = 2
-            while final_name in used_names_for_label:
-                final_name = f"{sub_name}_{suffix}"
-                suffix += 1
-            used_names_for_label.add(final_name)
-
-            fine_labels[cluster_row_idx] = f"{broad_label}__{final_name}"
-
-    df = df.copy()
-    df["label"] = fine_labels
-    print(f"\nTotal clusters created: {total_clusters_created}")
-    print(f"Expanded to {df['label'].nunique()} fine-grained categories")
+    df["label"] = fine_grained_labels
+    print(f"\nSuccessfully generated {df['label'].nunique()} fine-grained categories.")
     return df
 
 
-def contract_level_split(df: pd.DataFrame, train_frac=0.7, val_frac=0.15, seed=42):
-    """Splits by source_contract (not by row) so clauses from the same
-    contract never appear in more than one split - avoids leakage."""
-    rng = np.random.default_rng(seed)
-    contracts = df["source_contract"].unique()
-    rng.shuffle(contracts)
+def contract_level_split(df: pd.DataFrame, train_ratio=0.80, val_ratio=0.10):
+    unique_contracts = df["contract_name"].unique()
+    np.random.seed(42)
+    np.random.shuffle(unique_contracts)
 
-    n = len(contracts)
-    train_end = int(n * train_frac)
-    val_end = train_end + int(n * val_frac)
+    n_total = len(unique_contracts)
+    n_train = int(n_total * train_ratio)
+    n_val = int(n_total * val_ratio)
 
-    train_contracts = set(contracts[:train_end])
-    val_contracts = set(contracts[train_end:val_end])
-    test_contracts = set(contracts[val_end:])
+    train_c = set(unique_contracts[:n_train])
+    val_c = set(unique_contracts[n_train:n_train + n_val])
+    test_c = set(unique_contracts[n_train + n_val:])
 
-    train_df = df[df["source_contract"].isin(train_contracts)]
-    val_df = df[df["source_contract"].isin(val_contracts)]
-    test_df = df[df["source_contract"].isin(test_contracts)]
+    train_df = df[df["contract_name"].isin(train_c)].copy()
+    val_df = df[df["contract_name"].isin(val_c)].copy()
+    test_df = df[df["contract_name"].isin(test_c)].copy()
 
     return train_df, val_df, test_df
 
 
 def main():
-    df = pd.read_csv(INPUT_FILE)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    
+    df = load_raw_dataset()
 
-    expanded_df = expand_categories(df)
+    df = expand_categories(df)
+    print("\nSplitting by contract...")
+    train_df, val_df, test_df = contract_level_split(df)
 
-    train_df, val_df, test_df = contract_level_split(expanded_df)
+    print(f"Train set:      {len(train_df)} clauses ({train_df['contract_name'].nunique()} contracts)")
+    print(f"Validation set: {len(val_df)} clauses ({val_df['contract_name'].nunique()} contracts)")
+    print(f"Test set:       {len(test_df)} clauses ({test_df['contract_name'].nunique()} contracts)")
 
-    # Drop any category that ended up with zero examples in train
-    valid_labels = set(train_df["label"].unique())
-    val_df = val_df[val_df["label"].isin(valid_labels)]
-    test_df = test_df[test_df["label"].isin(valid_labels)]
-
-    print(f"\nFinal split sizes:")
-    print(f"  Train: {len(train_df)} rows, {train_df['label'].nunique()} categories")
-    print(f"  Validation: {len(val_df)} rows, {val_df['label'].nunique()} categories")
-    print(f"  Test: {len(test_df)} rows, {test_df['label'].nunique()} categories")
-
-    train_df.to_csv(TRAIN_FILE, index=False, encoding="utf-8")
-    val_df.to_csv(VALIDATION_FILE, index=False, encoding="utf-8")
-    test_df.to_csv(TEST_FILE, index=False, encoding="utf-8")
+    cols_to_save = ["contract_name", "clause_text", "label"]
+    train_df[cols_to_save].to_csv(TRAIN_FILE, index=False)
+    val_df[cols_to_save].to_csv(VALIDATION_FILE, index=False)
+    test_df[cols_to_save].to_csv(TEST_FILE, index=False)
 
     print(f"\nSaved:")
-    print(f"  {TRAIN_FILE}")
-    print(f"  {VALIDATION_FILE}")
-    print(f"  {TEST_FILE}")
+    print(f"  -> {TRAIN_FILE}")
+    print(f"  -> {VALIDATION_FILE}")
+    print(f"  -> {TEST_FILE}")
+    print("\nDataset preparation complete!")
 
 
 if __name__ == "__main__":
