@@ -5,8 +5,8 @@ from backend.app.model.schemas import ClauseAnalysis, RiskGraphData, RiskGraphEd
 
 def extract_clause_parameters(text: str) -> ClauseParameters:
     durations = re.findall(r"\b\d+\s*(?:days?|months?|years?|weeks?|hours?)\b", text, re.IGNORECASE)
-    notice = re.findall(r"\b\d+\s*(?:days?|months?|hours?)\s*(?:prior|advance)?\s*written\s*notice\b", text, re.IGNORECASE)
-    financials = re.findall(r"(?:\$|USD|EUR|GBP|INR|₹)\s*[\d,]+(?:\.\d+)?|\b\d+%\b", text, re.IGNORECASE)
+    notice = re.findall(r"\b\d+\s*(?:days?|months?|hours?|one month|two months?)\s*(?:prior|advance)?\s*written\s*notice\b", text, re.IGNORECASE)
+    financials = re.findall(r"(?:Rs\.?|\$|USD|EUR|GBP|INR|₹)\s*[\d,]+(?:\.\d+)?|\b\d+%\b|\btwo times\b|\bdouble\b", text, re.IGNORECASE)
     
     return ClauseParameters(
         durations=list(set(durations)),
@@ -15,116 +15,120 @@ def extract_clause_parameters(text: str) -> ClauseParameters:
     )
 
 def evaluate_dynamic_clause_risk(clause_type: str, text: str) -> Tuple[float, str, List[str]]:
-
     text_lower = text.lower()
     cat_lower = clause_type.lower()
-    risk = 20.0  # Base commercial standard
+    risk = 15.0  # Clean base commercial floor
     factors = []
 
-    # 1. Indemnity / Hold Harmless
-    if "indemn" in cat_lower or "indemn" in text_lower:
-        if "sole" in text_lower or "defend, indemnify, and hold harmless" in text_lower:
+    if any(k in text_lower for k in ["two times", "2x", "double the rent", "double rent", "treble"]):
+        risk += 60.0
+        factors.append("Punitive 200% double-rent penalty on delayed handover / holdover")
+    elif any(k in text_lower for k in ["liquidated damages", "penalty", "forfeit", "forfeiture"]):
+        risk += 35.0
+        factors.append("Strict liquidated damages / penalty forfeiture obligation")
+    
+    if any(k in text_lower for k in ["legal proceedings", "recovering possession", "initiating legal", "court proceedings"]):
+        risk += 20.0
+        factors.append("Express reservation of eviction & legal recovery proceedings")
+
+    if any(k in text_lower for k in ["any circumstances whatsoever", "shall not sublet", "shall not assign", "part with the demised"]):
+        risk += 40.0
+        factors.append("Absolute prohibition on sublease/assignment with zero exception or consent mechanism")
+    elif "sole discretion" in text_lower:
+        risk += 25.0
+        factors.append("Unilateral sole-discretion approval barrier")
+
+    if any(k in text_lower for k in ["security deposit", "deposit shall be refunded"]):
+        if any(k in text_lower for k in ["hold possession", "fails to refund", "without payment of rent"]):
             risk += 25.0
-            factors.append("Unilateral, broad-form indemnity obligation")
-        if "unlimited" in text_lower or "without limitation" in text_lower:
-            risk += 35.0
-            factors.append("Uncapped indemnity liability exposure")
-        if "gross negligence" not in text_lower and "willful misconduct" not in text_lower:
+            factors.append("Security deposit dispute mechanism: allows rent withholding / possession dispute")
+        if any(k in text_lower for k in ["adjusting any dues", "damages caused by", "cost towards damages"]):
             risk += 15.0
-            factors.append("Indemnity not limited to gross negligence or willful misconduct")
+            factors.append("Broad deduction scope against tenant security deposit")
 
-    # 2. Limitation of Liability
-    if "liability" in cat_lower or "liability" in text_lower:
-        if "unlimited" in text_lower or "not apply to" in text_lower or "no cap" in text_lower:
-            risk += 40.0
-            factors.append("Absence or carve-out from aggregate liability cap")
-        elif "shall not exceed" in text_lower:
-            risk += 10.0
-            factors.append("Capped liability standard clause")
-
-    # 3. Termination / Cancellation
-    if "terminat" in cat_lower or "terminat" in text_lower:
-        if "convenience" in text_lower:
-            if any(d in text_lower for d in ["immediate", "24 hours", "3 days", "7 days"]):
-                risk += 35.0
-                factors.append("Immediate or ultra-short termination for convenience")
-            else:
-                risk += 20.0
-                factors.append("Unilateral termination for convenience")
-        if "without notice" in text_lower:
-            risk += 40.0
-            factors.append("Termination without cure period or prior notice")
-
-    # 4. Anti-Assignment & Subleasing
-    if "assign" in cat_lower or "sublease" in cat_lower or "sublet" in text_lower:
-        if "sole discretion" in text_lower or "may not assign" in text_lower:
-            risk += 25.0
-            factors.append("Strict anti-assignment restriction without reasonable consent standard")
-
-    # 5. Restrictive Covenants / Non-Compete
-    if "compete" in cat_lower or "compete" in text_lower or "solicit" in text_lower:
-        if any(y in text_lower for y in ["2 years", "3 years", "5 years", "worldwide"]):
-            risk += 40.0
-            factors.append("Excessive post-termination non-compete duration or geography")
-        else:
-            risk += 25.0
-            factors.append("Post-termination restrictive covenant")
-
-    # 6. Fees & Liquidated Damages
-    if "fee" in cat_lower or "payment" in cat_lower or "damage" in cat_lower:
-        if "non-refundable" in text_lower or "forfeit" in text_lower:
+    if any(k in text_lower for k in ["enter upon", "right to visit", "inspection", "carry out repairs", "construction"]):
+        if any(k in text_lower for k in ["as and when required", "workmen"]):
             risk += 30.0
-            factors.append("Strict non-refundable deposit / liquidated damages clause")
-        if "compound interest" in text_lower or "penalty" in text_lower:
+            factors.append("Intrusive right of entry / potential interference with quiet possession")
+        else:
+            risk += 15.0
+            factors.append("Periodic property inspection right")
+
+    if any(k in text_lower for k in ["free and harmless", "hold harmless", "defend, indemnify", "indemnif"]):
+        if any(k in text_lower for k in ["claims, proceedings", "demands, or actions", "third-party"]):
+            risk += 25.0
+            factors.append("Broad third-party liability / indemnity & harmless defense covenant")
+        if any(k in text_lower for k in ["unlimited", "without limitation", "all liabilities"]):
+            risk += 30.0
+            factors.append("Uncapped indemnity exposure")
+
+    if any(k in text_lower for k in ["terminated before the expiry", "early termination", "termination for convenience"]):
+        if any(k in text_lower for k in ["24 hours", "immediate", "7 days"]):
+            risk += 40.0
+            factors.append("Immediate or ultra-short termination without adequate cure period")
+        elif any(k in text_lower for k in ["one month", "30 days", "prior notice"]):
             risk += 20.0
-            factors.append("High late-payment interest penalty")
+            factors.append("Unilateral early termination by either party upon 1-month notice")
 
-    risk = max(5.0, min(95.0, round(risk, 1)))
+    if any(k in text_lower for k in ["own expense", "responsibility for the tenant", "minor repairs"]):
+        risk += 15.0
+        factors.append("Maintenance & minor repair cost shifted entirely to tenant")
 
-    if risk >= 75.0:
+    if any(k in text_lower for k in ["compound interest", "running cost of elevator", "separately to the owner"]):
+        risk += 15.0
+        factors.append("Uncapped ancillary utility & maintenance pass-through charges")
+
+    if any(k in text_lower for k in ["civil courts", "exclusive jurisdiction", "arbitration"]):
+        risk += 10.0
+        factors.append("Binding local civil court dispute jurisdiction")
+
+    risk = max(10.0, min(95.0, round(risk, 1)))
+
+    if risk >= 70.0:
         level = "CRITICAL"
     elif risk >= 50.0:
         level = "HIGH"
-    elif risk >= 25.0:
+    elif risk >= 30.0:
         level = "MEDIUM"
     else:
         level = "LOW"
 
     if not factors:
-        factors.append("Standard commercial clause phrasing")
+        factors.append("Standard balanced commercial terms")
 
     return risk, level, factors
 
 
 class SemanticRiskGraph:
+
     INTERACTION_PATTERNS = [
         {
-            "src": ["indemn", "hold harmless"],
-            "tgt": ["liability", "limitation of liability"],
-            "relation": "UNPROTECTED_EXPOSURE",
-            "multiplier": 1.45,
-            "desc": "Indemnity carve-outs may bypass the limitation of liability cap."
+            "src": ["liquidated damages", "damage", "two times", "penalty"],
+            "tgt": ["terminat", "early termination", "expiry"],
+            "relation": "HOLDOVER_PENALTY_COMPOUND",
+            "multiplier": 1.50,
+            "desc": "Post-termination delay triggers punitive 200% double-rent liquidated damages."
         },
         {
-            "src": ["terminat", "cancellation"],
-            "tgt": ["fee", "payment", "liquidated damages"],
-            "relation": "TERMINATION_PENALTY_ACCELERATION",
+            "src": ["sublet", "assign", "anti assignment"],
+            "tgt": ["terminat", "legal proceedings"],
+            "relation": "UNCONSENTED_TRANSFER_DEFAULT",
+            "multiplier": 1.35,
+            "desc": "Breach of strict assignment prohibition allows immediate tenancy cancellation & eviction."
+        },
+        {
+            "src": ["security deposit", "deposit"],
+            "tgt": ["damage", "minor repairs", "repair"],
+            "relation": "DEPOSIT_DEDUCTION_EXPOSURE",
             "multiplier": 1.30,
-            "desc": "Termination triggers immediate acceleration of payments or fee forfeiture."
+            "desc": "Broad repair obligations give owner unilateral deduction rights against security deposit."
         },
         {
-            "src": ["non-compete", "restrictive covenant"],
-            "tgt": ["terminat"],
-            "relation": "POST_TERMINATION_RESTRAINT",
+            "src": ["enter upon", "visit", "inspection"],
+            "tgt": ["free and harmless", "quiet possession"],
+            "relation": "QUIET_POSSESSION_CONFLICT",
             "multiplier": 1.25,
-            "desc": "Restrictive covenants remain enforceable post-termination."
-        },
-        {
-            "src": ["confidential", "nda"],
-            "tgt": ["indemn"],
-            "relation": "CONFIDENTIALITY_INDEMNITY_LOOP",
-            "multiplier": 1.20,
-            "desc": "Confidentiality breaches carry uncapped indemnification obligations."
+            "desc": "Frequent inspection and repair entry rights may conflict with quiet possession covenants."
         }
     ]
 
@@ -169,8 +173,8 @@ class SemanticRiskGraph:
             systemic_score = 0.0
         else:
             base_avg = sum(c.risk_score for c in clauses) / len(clauses)
-            edge_boost = sum((e.risk_multiplier - 1.0) * 7.5 for e in edges)
-            systemic_score = min(98.0, round(base_avg + edge_boost, 1))
+            edge_boost = sum((e.risk_multiplier - 1.0) * 8.0 for e in edges)
+            systemic_score = min(96.0, round(base_avg + edge_boost, 1))
 
         return RiskGraphData(
             nodes=nodes,
