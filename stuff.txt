@@ -10,3 +10,11 @@ Visit http://localhost:8000/docs for interactive API docs.
 
 python -m pip install torch transformers datasets accelerate evaluate
 npx create-next-app@latest frontend
+
+
+cd PactGuard
+.\venv\Scripts\Activate.ps1
+uvicorn backend.app.main:app --reload --port 8000
+
+cd frontend
+npm run dev
